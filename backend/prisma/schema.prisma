@@ -1,0 +1,309 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ------------------------------------------------------
+// 1. KULLANICILAR VE ROLLER (Admin sistemi eklendi)
+// ------------------------------------------------------
+model User {
+  id           Int        @id @default(autoincrement())
+  email        String     @unique
+  passwordHash String     // Şifreler hash'lenerek tutulacak
+  fullName     String
+  phoneNumber  String?
+  role         Role       @default(USER) // YENİ: Adminleri buradan ayıracağız
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  invitations  Invitation[] // Bir kullanıcının birden fazla davetiyesi olabilir
+  payments     Payment[]
+}
+
+// ------------------------------------------------------
+// 2. YENİ SAAS TABLOLARI (Kategoriler ve Paketler)
+// ------------------------------------------------------
+
+// Adminden eklenebilen dinamik "Kategoriler" (Düğün, Sünnet, Parti vs.)
+model Category {
+  id          Int          @id @default(autoincrement())
+  name        String       // Örn: "Doğum Günü"
+  slug        String       @unique // Örn: "dogum-gunu"
+  icon        String       // Örn: "🎂"
+  description String?      // SEO ve vitrin için kısa açıklama
+  isActive    Boolean      @default(true) // İstenildiğinde kategori gizlenebilir
+  invitations Invitation[]
+  themes      Theme[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model Package {
+  id          Int      @id @default(autoincrement())
+  name        String   
+  description String?  // Müşteriye gösterilecek kısa açıklama
+  price       Float    
+  currency    String   @default("TRY")
+  
+  // YENİ EKLENEN SAAS ZEKASI:
+  type        PackageType @default(BUNDLE)
+  addonKey    String?     @unique // Eğer tip ADDON ise: 'rsvp', 'gallery', 'music'
+  
+  hasMusic    Boolean  @default(false)
+  hasRsvp     Boolean  @default(false)
+  hasMap      Boolean  @default(false)
+  hasGallery  Boolean  @default(false)
+  isPremium   Boolean  @default(false)
+  
+  isActive    Boolean  @default(true)
+  invitations Invitation[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+
+// ------------------------------------------------------
+// 3. DAVETİYELER (Sistemin kalbi)
+// ------------------------------------------------------
+model Invitation {
+  id              Int        @id @default(autoincrement())
+  slug            String     @unique // davetgeldi.com/omer-ve-gizem (Özel link)
+  isRsvpClosed    Boolean    @default(false)
+
+
+  galleryUrls     Json?    @default("[]")
+
+  totalPrice  Float?   @default(0) // Fatura tutarı
+  addons      Json?    // Seçilen eklentiler ["rsvp", "gallery"]
+
+  // Sahiplik
+  userId          Int
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // YENİ: Paket ve Kategori İlişkileri
+  categoryId      Int?
+  category        Category?  @relation(fields: [categoryId], references: [id])
+  packageId       Int?
+  package         Package?   @relation(fields: [packageId], references: [id])
+
+  // İçerik ve Kişiler
+  type            EventType  @default(WEDDING) // Enum olarak da kalabilir, Category tablosuyla eşleşir
+  brideName       String?
+  groomName       String?
+  eventDate       DateTime
+  
+  // Mekan ve Konum
+  locationName    String
+  fullAddress     String
+  mapCoordinates  String?    // Google Maps Iframe URL veya Lat/Lng
+  
+  // Medya ve Tasarım
+  themeId         String     @default("classic-white") // Seçilen tasarım şablonu
+  coverImageUrl   String?    // AWS S3 / Cloudinary linki
+  musicUrl        String?    // Arka plan müziği
+  welcomeMessage  String?    // "Bu mutlu günümüzde..." yazısı
+  
+  // Hikaye Bölümü (Yasemin Defteri)
+  storyTitle      String?
+  storyContent    String?
+  storyImageUrl   String?
+
+  // Hediye / Banka Bilgileri
+  bankAccountName String?
+  bankIban        String?
+  bankMessage     String?
+
+  // SaaS / Gelir Modeli ve Statü (YENİLENDİ: PENDING_PAYMENT, EXPIRED eklendi)
+  isPremium       Boolean          @default(false) // True ise reklam/logo gizlenir
+  status          InvitationStatus @default(DRAFT) 
+
+  expiresAt       DateTime?        // YENİ: Kapanma tarihi (Sistem otomatik EXPIRED yapar)
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // İlişkiler (Bağlı Tablolar)
+  guests          Guest[]
+  gallery         Gallery[]
+  payments        Payment[]
+  eventStops      EventStop[] 
+  milestones      Milestone[] 
+}
+
+// ------------------------------------------------------
+// 4. MEDYA GALERİSİ (Davetiye fotoğrafları)
+// ------------------------------------------------------
+model Gallery {
+  id           Int        @id @default(autoincrement())
+  imageUrl     String     // Bulut depolama linki
+  order        Int        @default(0) // Fotoğrafların sıralaması
+  
+  invitationId Int
+  invitation   Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+}
+
+// ------------------------------------------------------
+// 5. MİSAFİRLER / LCV (Katılım bildirenler)
+// ------------------------------------------------------
+model Guest {
+  id             Int              @id @default(autoincrement())
+  firstName      String
+  lastName       String
+  phoneNumber    String?
+  email          String?          
+  attendance     AttendanceStatus @default(PENDING) // Katılacağım, Katılamayacağım, Belki
+  guestCount     Int              @default(1) // Yanında kaç kişi getiriyor?
+  message        String?          // Çifte iletilen tebrik mesajı
+  
+  // Gelişmiş LCV Yanıtları
+  mealPreference String?          // VEJETARYEN, GLUTENSIZ, STANDART
+  hasChildren    Boolean          @default(false)
+  kvkkApproved   Boolean          @default(true)
+  
+  invitationId   Int
+  invitation     Invitation       @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  
+  createdAt      DateTime         @default(now())
+}
+
+// ------------------------------------------------------
+// 6. PROGRAM DURAKLARI (Kına, Nikah, Düğün)
+// ------------------------------------------------------
+model EventStop {
+  id           Int        @id @default(autoincrement())
+  title        String     // Kına Gecesi, Nikah vs.
+  date         DateTime
+  timeString   String?    // Örn: "23:59" veya "00:13"
+  locationName String
+  address      String?
+  mapLink      String?
+  
+  // Ek Mekan Bilgileri (Sizi Burada Ağırlıyoruz)
+  dressCode    String?    // Garden formal vb.
+  parkingInfo  String?    // Alan içinde ücretsiz vb.
+  valeInfo     String?    // Girişte mevcut vb.
+  accomodation String?    // Yakın otel önerileri vb.
+
+  invitationId Int
+  invitation   Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+}
+
+// ------------------------------------------------------
+// 7. DÖNÜM NOKTALARI (İlk Tanışma, Teklif)
+// ------------------------------------------------------
+model Milestone {
+  id           Int        @id @default(autoincrement())
+  title        String     // İlk Tanışma, Evlilik Teklifi vb.
+  date         DateTime
+  description  String?
+  
+  invitationId Int
+  invitation   Invitation @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+}
+
+// ------------------------------------------------------
+// 8. ÖDEME GEÇMİŞİ (Premium üyelik satışları)
+// ------------------------------------------------------
+model Payment {
+  id            Int           @id @default(autoincrement())
+  amount        Float
+  provider      PaymentMethod // Iyzico, PayTR, Stripe
+  transactionId String?       @unique // Ödeme kuruluşundan dönen referans kodu
+  status        PaymentStatus @default(PENDING)
+  
+  userId        Int
+  user          User          @relation(fields: [userId], references: [id])
+  
+  invitationId  Int
+  invitation    Invitation    @relation(fields: [invitationId], references: [id])
+  
+  createdAt     DateTime      @default(now())
+}
+
+// ------------------------------------------------------
+// 9. TEMALAR VE TASARIMLAR (YENİ)
+// ------------------------------------------------------
+model Theme {
+  id           Int        @id @default(autoincrement())
+  name         String     // Örn: "Yasemin Perdesi"
+  themeId      String     @unique // Örn: "yasemin-perdesi" (Sistemdeki tanınma adı)
+  icon         String     // Örn: "🌿"
+  
+  // Tasarım ve Özellikler
+  coverImage   String?    // Temanın giriş görseli (Vitrin veya admin için URL)
+  fontFamily   String     @default("font-serif") // Yazı Tipi (Örn: font-serif, font-sans)
+  primaryColor String?    // Tema ana rengi (Hex code veya Tailwind class)
+  animation    String     @default("fade-in") // Sisteme eklenecek animasyon türü
+  
+  config       Json?      // İleri düzey Tailwind ayarlarını tutacağımız esnek alan
+  isActive     Boolean    @default(true)
+  
+  // Hangi kategorilerde bu tema kullanılabilir? (Çoka Çok İlişki)
+  categories   Category[]
+  
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+// ==========================================
+// ENUMLAR (Sabit Değerler)
+// ==========================================
+
+// YENİ: Kullanıcı Rolleri
+enum Role {
+  USER
+  ADMIN
+}
+
+// YENİ: Davetiye Yaşam Döngüsü (Statü)
+enum InvitationStatus {
+  DRAFT             // Taslak
+  PENDING_PAYMENT   // Ödeme Bekleniyor (Havale/EFT)
+  ACTIVE            // Yayında (Aktif)
+  EXPIRED           // Süresi Dolmuş (Erişime Kapalı)
+}
+
+enum EventType {
+  WEDDING
+  ENGAGEMENT
+  HENNA
+  CIRCUMCISION
+  BIRTHDAY
+  BABY_SHOWER
+  CORPORATE
+  PARTY
+  OTHER
+}
+
+// Eski Status (Artık InvitationStatus kullanacağız ama hata vermemesi için şimdilik tutuyoruz)
+enum Status {
+  DRAFT
+  PUBLISHED
+}
+
+enum AttendanceStatus {
+  PENDING
+  ATTENDING
+  DECLINED
+}
+
+enum PaymentMethod {
+  IYZICO
+  PAYTR
+  STRIPE
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum PackageType {
+  BASE      // Temel Altyapı (Standart Paket)
+  BUNDLE    // İndirimli Paket (Premium vb.)
+  ADDON     // Eklenti (LCV, Galeri, Müzik)
+}
